@@ -1,3 +1,9 @@
+# xzl: 
+to dump model structure: 
+```
+python3 test-inference.py
+``` 
+
 # End-to-End Spoken Language Understanding (SLU) in PyTorch
 This repo contains PyTorch code for training end-to-end SLU models used in the papers "[Speech Model Pre-training for End-to-End Spoken Language Understanding](https://arxiv.org/abs/1904.03670)" and "[Using Speech Synthesis to Train End-to-End Spoken Language Understanding Models](https://arxiv.org/abs/1910.09463)".
 

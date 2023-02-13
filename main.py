@@ -57,7 +57,11 @@ if train:
 	for epoch in range(config.training_num_epochs):
 		print("========= Epoch %d of %d =========" % (epoch+1, config.training_num_epochs))
 		train_intent_acc, train_intent_loss = trainer.train(train_dataset)
+		#try: 
 		valid_intent_acc, valid_intent_loss = trainer.test(valid_dataset)
+		#except:
+		#	print("xzl: no validation dataset found (can happen to seq2seq). skip")
+		#	valid_intent_acc, valid_intent_loss = -1, -1		
 
 		print("========= Results: epoch %d of %d =========" % (epoch+1, config.training_num_epochs))
 		print("*intents*| train accuracy: %.2f| train loss: %.2f| valid accuracy: %.2f| valid loss: %.2f\n" % (train_intent_acc, train_intent_loss, valid_intent_acc, valid_intent_loss) )

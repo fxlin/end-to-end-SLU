@@ -65,13 +65,19 @@ def read_config(config_file):
 	config.intent_rnn_bidirectional=(parser.get("intent_module", "intent_rnn_bidirectional") == "True")
 	try:
 		config.intent_encoder_dim=int(parser.get("intent_module", "intent_encoder_dim"))
+		print("xzl:intent_encoder_dim")
 		config.num_intent_encoder_layers=int(parser.get("intent_module", "num_intent_encoder_layers"))
+		print("xzl:num_intent_encoder_layers")
 		config.intent_decoder_dim=int(parser.get("intent_module", "intent_decoder_dim"))
+		print("xzl:intent_decoder_dim")
 		config.num_intent_decoder_layers=int(parser.get("intent_module", "num_intent_decoder_layers"))
+		print("xzl:num_intent_decoder_layers")
 		config.intent_decoder_key_dim=int(parser.get("intent_module", "intent_decoder_key_dim"))
+		print("xzl:intent_decoder_key_dim")
 		config.intent_decoder_value_dim=int(parser.get("intent_module", "intent_decoder_value_dim"))
+		print("xzl:intent_decoder_value_dim")
 	except:
-		print("no seq2seq hyperparameters")
+		print("no seq2seq hyperparameters")		# xzl: if none, so what??
 
 	#[pretraining]
 	config.asr_path=parser.get("pretraining", "asr_path")
@@ -106,6 +112,8 @@ def read_config(config_file):
 		# old config file with no augmentation
 		config.augment = False
 
+	#print("xzl: ", parser.get("training", "seq2seq"))
+
 	try:
 		config.seq2seq = (parser.get("training", "seq2seq")  == "True")
 	except:
@@ -119,9 +127,12 @@ def read_config(config_file):
 		config.dataset_upsample_factor = 1
 
 	# compute downsample factor (divide T by this number)
+	# xzl input raw is reduced by this factor??
 	config.phone_downsample_factor = 1
-	for factor in config.cnn_stride + config.cnn_max_pool_len + config.phone_downsample_len:
+	for factor in config.cnn_stride + config.cnn_max_pool_len + config.phone_downsample_len:	# xzl concatenate. not addition
 		config.phone_downsample_factor *= factor
+	print("xzl phone_downsample_factor=", config.phone_downsample_factor)
+	print("xzl config.cnn_stride + config.cnn_max_pool_len + config.phone_downsample_len", config.cnn_stride + config.cnn_max_pool_len + config.phone_downsample_len)
 
 	config.word_downsample_factor = 1
 	for factor in config.cnn_stride + config.cnn_max_pool_len + config.phone_downsample_len + config.word_downsample_len:
@@ -129,13 +140,14 @@ def read_config(config_file):
 
 	return config
 
+# xzl: also invoked for inference, populating sy_intent etc
 def get_SLU_datasets(config):
 	"""
 	config: Config object (contains info about model and training)
 	"""
 	base_path = config.slu_path
 
-	# Split
+	# Split				xzl: why use different datasets for seq2seq or not??	
 	if not config.seq2seq:
 		synthetic_train_df = pd.read_csv(os.path.join(base_path, "data", "synthetic_data.csv"))
 		real_train_df = pd.read_csv(os.path.join(base_path, "data", "train_data.csv"))
@@ -186,6 +198,8 @@ def get_SLU_datasets(config):
 		valid_df = pd.read_csv(os.path.join(base_path, "data", "valid_data_seq2seq.csv"))
 		test_df = pd.read_csv(os.path.join(base_path, "data", "test_data_seq2seq.csv"))
 
+	print("xzl: config.seq2seq", config.seq2seq)
+	
 	if not config.seq2seq:
 		# Get list of slots
 		Sy_intent = {"action": {}, "object": {}, "location": {}}
@@ -194,18 +208,21 @@ def get_SLU_datasets(config):
 		for slot in ["action", "object", "location"]:
 			slot_values = Counter(train_df[slot])
 			for idx,value in enumerate(slot_values):
-				Sy_intent[slot][value] = idx
+				Sy_intent[slot][value] = idx			# xzl: Sy_intent like a hashtable, from slot/value strings to idx. later reverse lookup will be used
 			values_per_slot.append(len(slot_values))
-		config.values_per_slot = values_per_slot
+		config.values_per_slot = values_per_slot		# xzl: a list of integers...
+		print("xzl values_per_slot", values_per_slot)
 		config.Sy_intent = Sy_intent
+		print("xzl Sy_intent", Sy_intent)
 	else: #seq2seq
-		import string
+		import string		# xzl: inc possible values & printable chars (for asr target?)
 		all_chars = "".join(train_df.loc[i]["semantics"] for i in range(len(train_df))) + string.printable # all printable chars; TODO: unicode?
 		all_chars = list(set(all_chars))
 		Sy_intent = ["<sos>"]
 		Sy_intent += all_chars
 		Sy_intent.append("<eos>")
 		config.Sy_intent = Sy_intent
+		print("xzl: seq2seq, Sy_intent=", Sy_intent)
 
 	# If certain phrases are specified, only use those phrases
 	if config.train_wording_path is not None:
@@ -254,7 +271,7 @@ class SLUDataset(torch.utils.data.Dataset):
 		self.base_path = base_path
 		self.Sy_intent = Sy_intent
 		self.upsample_factor = upsample_factor
-		self.augment = False #augment
+		self.augment = False #augment			xzl: ??
 		self.SNRs = [0,5,10,15,20]
 		self.seq2seq = config.seq2seq
 
@@ -269,6 +286,7 @@ class SLUDataset(torch.utils.data.Dataset):
 		#true_idx = idx
 		idx = idx % len(self.df)
 
+		'''
 		wav_path = os.path.join(self.base_path, self.df.loc[idx].path)
 		effect = torchaudio.sox_effects.SoxEffectsChain()
 		effect.set_input_file(wav_path)
@@ -288,10 +306,24 @@ class SLUDataset(torch.utils.data.Dataset):
 			effect.append_effect_to_chain("vol", gain)
 			del gain_dB
 
-
 		wav, fs = effect.sox_build_flow_effects()
 		x = wav[0].numpy()
 		del wav, effect
+		'''
+
+		# xzl... below
+		# https://mattip.github.io/audio/0.7/sox_effects.html#torchaudio.sox_effects.apply_effects_file
+		augment = False
+		effects = []
+		try: 
+			wav_path = os.path.join(self.base_path, self.df.loc[idx].path)
+		except:
+			wav_path = self.df.loc[idx].wav		# xzl: in seq2seq data, the column is called ``wav" and it's abs path
+		wav, fs = torchaudio.sox_effects.apply_effects_file(wav_path, effects)
+		x = wav[0].numpy()
+		# print(len(x), fs)		
+		del wav
+		# --- end xzl ---- #
 
 		if augment:
 			# crop
@@ -326,6 +358,7 @@ class SLUDataset(torch.utils.data.Dataset):
 			y_intent += [self.Sy_intent.index(c) for c in self.df.loc[idx]["semantics"]]
 			y_intent.append(self.Sy_intent.index("<eos>"))
 
+		#print (len(x), y_intent) # xzl
 		return (x, y_intent)
 
 def one_hot(letters, S):
@@ -390,6 +423,7 @@ class CollateWavsSLU:
 
 			return (x,y_intent)
 
+# xzl: called by pretrain only
 def get_ASR_datasets(config):
 	"""
 		Assumes that the data directory contains the following two directories:
@@ -480,7 +514,7 @@ class ASRDataset(torch.utils.data.Dataset):
 		tg = textgrid.TextGrid()
 		tg.read(self.textgrid_paths[idx])
 
-		y_phoneme = []
+		y_phoneme = []		# xzl: per frame labels???
 		for phoneme in tg.getList("phones")[0]:
 			duration = phoneme.maxTime - phoneme.minTime
 			phoneme_index = self.Sy_phoneme.index(phoneme.mark.rstrip("0123456789")) if phoneme.mark.rstrip("0123456789") in self.Sy_phoneme else -1
@@ -503,7 +537,7 @@ class ASRDataset(torch.utils.data.Dataset):
 		end = start + random_length
 
 		x = x[start:end]
-		y_phoneme = y_phoneme[start:end:self.phone_downsample_factor]
+		y_phoneme = y_phoneme[start:end:self.phone_downsample_factor]  # xzl: sample with fixed strides...?
 		y_word = y_word[start:end:self.word_downsample_factor]
 
 		return (x, y_phoneme, y_word)

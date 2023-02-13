@@ -46,7 +46,7 @@ class Trainer:
 
 	def train(self, dataset, print_interval=100):
 		# TODO: refactor to remove if-statement?
-		if isinstance(dataset, ASRDataset):
+		if isinstance(dataset, ASRDataset):		# xzl: train on ASR. in fact it's pretty simple.
 			train_phone_acc = 0
 			train_phone_loss = 0
 			train_word_acc = 0
@@ -54,7 +54,7 @@ class Trainer:
 			num_examples = 0
 			self.model.train()
 			for idx, batch in enumerate(tqdm(dataset.loader)):
-				x,y_phoneme,y_word = batch
+				x,y_phoneme,y_word = batch		# xzl: training data has phoneme & word labels...
 				batch_size = len(x)
 				num_examples += batch_size
 				phoneme_loss, word_loss, phoneme_acc, word_acc = self.model(x,y_phoneme,y_word)
@@ -64,7 +64,7 @@ class Trainer:
 				self.optimizer.zero_grad()
 				loss.backward()
 				self.optimizer.step()
-				train_phone_loss += phoneme_loss.cpu().data.numpy().item() * batch_size
+				train_phone_loss += phoneme_loss.cpu().data.numpy().item() * batch_size	# xzl:default avg loss per batch?
 				train_word_loss += word_loss.cpu().data.numpy().item() * batch_size
 				train_phone_acc += phoneme_acc.cpu().data.numpy().item() * batch_size
 				train_word_acc += word_acc.cpu().data.numpy().item() * batch_size
@@ -81,7 +81,7 @@ class Trainer:
 			self.log(results)
 			self.epoch += 1
 			return train_phone_acc, train_phone_loss, train_word_acc, train_word_loss
-		else: # SLUDataset
+		else: # SLUDataset				xzl: use pretrained (w/ ASR) modules to train SLU..
 			train_intent_acc = 0
 			train_intent_loss = 0
 			num_examples = 0
@@ -91,7 +91,7 @@ class Trainer:
 				x,y_intent = batch
 				batch_size = len(x)
 				num_examples += batch_size
-				intent_loss, intent_acc = self.model(x,y_intent)
+				intent_loss, intent_acc = self.model(x,y_intent)		# xzl: magic is within model impl...
 				loss = intent_loss
 				self.optimizer.zero_grad()
 				loss.backward()
@@ -101,7 +101,7 @@ class Trainer:
 				if idx % print_interval == 0:
 					print("intent loss: " + str(intent_loss.cpu().data.numpy().item()))
 					print("intent acc: " + str(intent_acc.cpu().data.numpy().item()))
-					if self.model.seq2seq:
+					if self.model.seq2seq:	# xzl: intent serialized as seq...
 						self.model.cpu(); self.model.is_cuda = False
 						x = x.cpu(); y_intent = y_intent.cpu()
 						print("seq2seq output")

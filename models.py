@@ -3,6 +3,7 @@ import numpy as np
 import sys
 import os
 import math
+import torchinfo # xzl
 
 def flip(x, dim):
 	xsize = x.size()
@@ -23,6 +24,7 @@ def sinc(band,t_right):
 
 	return y
 
+# xzl: basically, some kind of pooling
 class Downsample(torch.nn.Module):
 	"""
 	Downsamples the input in the time/sequence domain
@@ -46,6 +48,7 @@ class Downsample(torch.nn.Module):
 			return torch.nn.functional.max_pool1d(x.transpose(self.axis, 2), kernel_size=self.factor, ceil_mode=True).transpose(self.axis, 2)
 			
 
+# xzl: time domain conv on raw speech... (fft inside??)
 class SincLayer(torch.nn.Module):
 	"""
 	Modified from https://github.com/mravanelli/SincNet/blob/master/dnn_models.py:sinc_conv
@@ -105,9 +108,16 @@ class SincLayer(torch.nn.Module):
 
 			filters[i,:]=band_pass*window
 
-			out=torch.nn.functional.conv1d(x, filters.view(self.N_filt,1,self.Filt_dim), stride=self.stride, padding=self.padding)
+			# xzl: conv in time domain? in place of fft? 
+			# xzl: bug?? should be out of the loop. but won't affect correctness?
+			#		cf: https://github.com/mravanelli/SincNet/blob/master/dnn_models.py#L218
+			#out=torch.nn.functional.conv1d(x, filters.view(self.N_filt,1,self.Filt_dim), stride=self.stride, padding=self.padding)
 
-		return out
+		out=torch.nn.functional.conv1d(x, filters.view(self.N_filt,1,self.Filt_dim),  # xzl: (80,1,401)
+			stride=self.stride, 	# 80
+			padding=self.padding)	 # 200
+
+		return out		# xzl:  size(1,80,720), (1,80,595...)	720/595 seems length. where do they come from? do not fully understand...
 
 class FinalPool(torch.nn.Module):
 	def __init__(self):
@@ -146,7 +156,7 @@ class RNNSelect(torch.nn.Module):
 		Outputs a Tensor of shape 
 		"""
 
-		return input[0] 
+		return input[0] 		# xzl: rnn's output (output,h_n)
 
 class LayerNorm(torch.nn.Module):
 	def __init__(self, dim, eps=1e-6):
@@ -167,6 +177,8 @@ class Abs(torch.nn.Module):
 	def forward(self, input):
 		return torch.abs(input) 
 
+
+# xzl: to be trained with ASR dataset. 
 class PretrainedModel(torch.nn.Module):
 	"""
 	Model pre-trained to recognize phonemes and words.
@@ -178,7 +190,7 @@ class PretrainedModel(torch.nn.Module):
 		self.is_cuda = torch.cuda.is_available()
 
 		# CNN
-		num_conv_layers = len(config.cnn_N_filt)
+		num_conv_layers = len(config.cnn_N_filt)		# xzl: e.g. (80,60,60) 3 conv layers
 		for idx in range(num_conv_layers):
 			# first conv layer
 			if idx == 0:
@@ -202,7 +214,7 @@ class PretrainedModel(torch.nn.Module):
 				self.phoneme_layers.append(layer)
 
 			# pool
-			layer = torch.nn.MaxPool1d(config.cnn_max_pool_len[idx], ceil_mode=True)
+			layer = torch.nn.MaxPool1d(config.cnn_max_pool_len[idx], ceil_mode=True)		# xzl: 1d max pool. len=2 (per config)
 			layer.name = "pool%d" % idx
 			self.phoneme_layers.append(layer)
 
@@ -237,7 +249,7 @@ class PretrainedModel(torch.nn.Module):
 			if config.phone_rnn_bidirectional:
 				out_dim *= 2
 
-			# grab hidden states of RNN for each timestep
+			# grab hidden states of RNN for each timestep			xzl -- for doing things below....
 			layer = RNNSelect()
 			layer.name = "phone_rnn_select%d" % idx
 			self.phoneme_layers.append(layer)
@@ -247,7 +259,7 @@ class PretrainedModel(torch.nn.Module):
 			layer.name = "phone_dropout%d" % idx
 			self.phoneme_layers.append(layer)
 
-			# downsample
+			# downsample			xzl -- over time. just to reduce seq length?? shorter seq at deeper GRU layer
 			layer = Downsample(method=config.phone_downsample_type[idx], factor=config.phone_downsample_len[idx], axis=1)
 			layer.name = "phone_downsample%d" % idx
 			self.phoneme_layers.append(layer)
@@ -258,7 +270,7 @@ class PretrainedModel(torch.nn.Module):
 		# word RNN
 		num_rnn_layers = len(config.word_rnn_num_hidden)
 		for idx in range(num_rnn_layers):
-			# recurrent
+			# recurrent      xzl - #layer=1? then stack them. for grab hidden state per layer?
 			layer = torch.nn.GRU(input_size=out_dim, hidden_size=config.word_rnn_num_hidden[idx], batch_first=True, bidirectional=config.word_rnn_bidirectional)
 			layer.name = "word_rnn%d" % idx
 			self.word_layers.append(layer)
@@ -283,7 +295,7 @@ class PretrainedModel(torch.nn.Module):
 			self.word_layers.append(layer)
 
 		self.word_layers = torch.nn.ModuleList(self.word_layers)
-		self.word_linear = torch.nn.Linear(out_dim, config.vocabulary_size)
+		self.word_linear = torch.nn.Linear(out_dim, config.vocabulary_size)		# xzl so this is arbitrary??
 		self.pretraining_type = config.pretraining_type
 		if self.is_cuda:
 			self.cuda()
@@ -295,13 +307,18 @@ class PretrainedModel(torch.nn.Module):
 		y_word : LongTensor of shape (batch size, T'')
 
 		Compute loss for y_word and y_phoneme for each x in the batch.
+
+		xzl: only invoked for training?  inference invokes compute_features() instead??
 		"""
+		print("xzl:", x.size(), y_phoneme.size(), y_word.size())
+
 		self.is_cuda = next(self.parameters()).is_cuda
 		if self.is_cuda:
 			x = x.cuda()
 			y_phoneme = y_phoneme.cuda()
 			y_word = y_word.cuda()
 
+		# xzl: phoneme embeddings & loss.....
 		out = x.unsqueeze(1)
 		for layer in self.phoneme_layers:
 			out = layer(out)
@@ -313,8 +330,8 @@ class PretrainedModel(torch.nn.Module):
 		valid_phoneme_indices = y_phoneme!=-1
 		phoneme_acc = (phoneme_logits.max(1)[1][valid_phoneme_indices] == y_phoneme[valid_phoneme_indices]).float().mean()
 
-		# avoid computing 
-		if self.pretraining_type == 1:
+		# avoid computing 	xzl: cal word embedding & loss...
+		if self.pretraining_type == 1:		# xzl: pretrain w/ phoneme loss only... 
 			word_loss = torch.tensor([0.])
 			word_acc = torch.tensor([0.])
 		else:
@@ -328,6 +345,7 @@ class PretrainedModel(torch.nn.Module):
 			valid_word_indices = y_word!=-1
 			word_acc = (word_logits.max(1)[1][valid_word_indices] == y_word[valid_word_indices]).float().mean()
 
+		# xzl acc seems per batch mean?
 		return phoneme_loss, word_loss, phoneme_acc, word_acc
 
 	def compute_posteriors(self, x):
@@ -351,10 +369,23 @@ class PretrainedModel(torch.nn.Module):
 		if self.is_cuda:
 			x = x.cuda()
 
-		out = x.unsqueeze(1)
+		out = x.unsqueeze(1)		# xzl: out size [1,1,T]...
+		#torchinfo.summary(self.phoneme_layers,out.size())	# xzl not working
+
 		for layer in self.phoneme_layers:
+			# torchinfo.summary(layer,out.size())	# xzl  not working
 			out = layer(out)
 
+		# xzl: debugging... dump phonemes...
+		phoneme_logits = self.phoneme_linear(out)
+		#print("xzl: phoneme logits before change view:", phoneme_logits.size())
+
+		# xzl: phoneme_logits (batchsize, T, #phonemes)...
+		# 		the following: concatenates multiple inputs in a batch, and project to words... 
+		phoneme_logits = phoneme_logits.view(phoneme_logits.shape[0]*phoneme_logits.shape[1], -1)
+		#print("xzl: phoneme logits after:", phoneme_logits.size())
+		print("phoneme indices", phoneme_logits.max(1)[1])
+		
 		for layer in self.word_layers:
 			out = layer(out)
 
@@ -378,6 +409,7 @@ def is_frozen(layer):
 		if param.requires_grad: return False
 	return True
 
+# xzl: take embeddings (phoneme?word?) and encode. what's the diff vs. non seq2seq intent module which also uses GRU?
 class Seq2SeqEncoder(torch.nn.Module):
 	def __init__(self, input_dim, num_layers, encoder_dim):
 		super(Seq2SeqEncoder, self).__init__()
@@ -506,7 +538,7 @@ class Seq2SeqDecoder(torch.nn.Module):
 		embedding_dim = decoder_dim
 		self.embed = torch.nn.Linear(num_labels, embedding_dim)
 		self.attention = Attention(encoder_dim*2, decoder_dim, key_dim, value_dim)
-		self.rnn = DecoderRNN(num_layers, decoder_dim, embedding_dim + value_dim, dropout=0.5)
+		self.rnn = DecoderRNN(num_layers, decoder_dim, embedding_dim + value_dim, dropout=0.5)  # xzl: input size = embedding_dim + value_dim ???
 		self.initial_state = torch.nn.Parameter(torch.randn(num_layers,decoder_dim))
 		self.linear = torch.nn.Linear(decoder_dim, num_labels)
 		self.log_softmax = torch.nn.LogSoftmax(dim=1)
@@ -514,9 +546,9 @@ class Seq2SeqDecoder(torch.nn.Module):
 
 	def forward(self, encoder_outputs, y, y_lengths=None):
 		"""
-		encoder_outputs : Tensor of shape (batch size, T, encoder output dim)
-		y : Tensor of shape (batch size, U, num_labels) - padded with end-of-sequence tokens
-		y_lengths : list of integers
+		encoder_outputs : Tensor of shape (batch size, T, encoder output dim)		 xzl: hidden states of GRU over T timesteps...
+		y : Tensor of shape (batch size, U, num_labels) - padded with end-of-sequence tokens	xzl: U - max len of output seq? # of slots??
+		y_lengths : list of integers			xzl: ??? one for each y??
 		Compute log p(y|x) for each (x,y) in the batch.
 		"""
 		#if self.is_cuda:
@@ -526,28 +558,31 @@ class Seq2SeqDecoder(torch.nn.Module):
 
 		batch_size = y.shape[0]
 		U = y.shape[1]
-		num_labels = y.shape[2]
+		num_labels = y.shape[2]		# xzl: total # of possible labels across all slots??
 
 		# Initialize the decoder state
 		decoder_state = torch.stack([self.initial_state] * batch_size)
 
-		# Initialize log p(y|x) to 0, y_u-1 to SOS
+		# xzl: below - core logic for decoder
+
+		# Initialize log p(y|x) to 0, y_u-1 to SOS				xzl: <sos> start of intent output; <eos> end
 		log_p_y_x = 0
-		y_u_1 = torch.zeros(batch_size, num_labels)
-		y_u_1[:,self.SOS] = 1.
+		y_u_1 = torch.zeros(batch_size, num_labels)		# xzl: the prev element of y (ground truth, label), one-hot
+		y_u_1[:,self.SOS] = 1.			
 		if self.is_cuda: y_u_1 = y_u_1.cuda()
 		for u in range(0, U):
-			# Feed in the previous element of y and the attention output; update the decoder state
-			context = self.attention(encoder_outputs, decoder_state[:,-1])
+			# Feed in the previous element of y (xzl: that's y_u_1) and the attention output; update the decoder state
+			context = self.attention(encoder_outputs, decoder_state[:,-1])	 # xzl: all encoder output and decoder's state so far
 			embedding = self.embed(y_u_1)
 			decoder_input = torch.cat([embedding, context], dim=1)
 			decoder_state = self.rnn(decoder_input, decoder_state)
 
 			# Compute log p(y_u|y_1, y_2, ..., x) (the log probability of the next element)
-			decoder_out = self.log_softmax(self.linear(decoder_state[:,-1]))
+			decoder_out = self.log_softmax(self.linear(decoder_state[:,-1]))			# xzl: grab the rnn hidden state at last timestep... project
 			log_p_yu = (decoder_out * y[:,u,:]).sum(dim=1) # y_u is one-hot; use dot-product to select the y_u'th output probability 
+			# xzl: above: compute prob of y_u (which is given as GT)
 
-			# Add log p(y_u|...) to log p(y|x)
+			# Add log p(y_u|...) to log p(y|x)			xzl: sum of logs... of label probs...(individual losses). cf ASR/SLU textbook
 			log_p_y_x += log_p_yu # TODO: mask based on y_lengths?
 
 			# Look at next element of y
@@ -555,6 +590,7 @@ class Seq2SeqDecoder(torch.nn.Module):
 
 		return log_p_y_x
 
+	# xzl: seq2seq. will need a beam search
 	def infer(self, encoder_outputs, Sy, B=4, debug=False, y_lengths=None):
 		"""
 		encoder_outputs : Tensor of shape (batch size, T, encoder_dim*2)
@@ -573,11 +609,14 @@ class Seq2SeqDecoder(torch.nn.Module):
 		# Initialize the decoder state
 		decoder_state = torch.stack([self.initial_state] * batch_size)
 
-		true_U = 200
+		true_U = 200			# xzl:???
 
 		if y_lengths is not None:
 			true_U = max(y_lengths)
 
+		# xzl below: beam search, score and rank top hypothese. 
+		#			so for each decode timestep, pick topk possible outputs, then use that as input to decode get next timestep, so on so forth?
+		#			pick beam path that the sum of log(y|x) over all decode steps??
 		decoder_state_shape = decoder_state.shape
 		beam = torch.zeros(B,batch_size,true_U,Sy_size); beam_scores = torch.zeros(B,batch_size); decoder_states = torch.zeros(B,decoder_state_shape[0], decoder_state_shape[1], decoder_state_shape[2])
 		if self.is_cuda:
@@ -652,12 +691,12 @@ class Seq2SeqDecoder(torch.nn.Module):
 
 class Model(torch.nn.Module):
 	"""
-	End-to-end SLU model.
+	End-to-end SLU model.    xzl: input comes from pretrained model's features
 	"""
 	def __init__(self, config):
 		super(Model, self).__init__()
 		self.is_cuda = torch.cuda.is_available()
-		self.Sy_intent = config.Sy_intent
+		self.Sy_intent = config.Sy_intent		# xzl: format of intent ?? slots vs. streaming?
 		pretrained_model = PretrainedModel(config)
 		if config.pretraining_type != 0:
 			pretrained_model_path = os.path.join(config.folder, "pretraining", "model_state.pth")
@@ -679,8 +718,9 @@ class Model(torch.nn.Module):
 		# fixed-length output:
 		if not self.seq2seq:
 			self.values_per_slot = config.values_per_slot
-			self.num_values_total = sum(self.values_per_slot)
-			num_rnn_layers = len(config.intent_rnn_num_hidden)
+			self.num_values_total = sum(self.values_per_slot)		# xzl: # of values summed over all slots
+			num_rnn_layers = len(config.intent_rnn_num_hidden)		# xzl: note it's len(). ex 1 layer only...
+			# xzl: start to build a RNN.... ("intent_layers...") stack them...
 			for idx in range(num_rnn_layers):
 				# recurrent
 				layer = torch.nn.GRU(input_size=out_dim, hidden_size=config.intent_rnn_num_hidden[idx], batch_first=True, bidirectional=config.intent_rnn_bidirectional)
@@ -691,7 +731,8 @@ class Model(torch.nn.Module):
 				if config.intent_rnn_bidirectional:
 					out_dim *= 2
 
-				# grab hidden states of RNN for each timestep
+				# grab hidden states of RNN for each timestep    
+				# 		xzl: output of GRU will be hidden states at each t. now grab them for downsample etc before next layer RNN...
 				layer = RNNSelect()
 				layer.name = "intent_rnn_select%d" % idx
 				self.intent_layers.append(layer)
@@ -706,23 +747,24 @@ class Model(torch.nn.Module):
 				layer.name = "intent_downsample%d" % idx
 				self.intent_layers.append(layer)
 
-			layer = torch.nn.Linear(out_dim, self.num_values_total)
+			layer = torch.nn.Linear(out_dim, self.num_values_total)		# xzl: project #out_dim features to #self.num_values_total features. 
 			layer.name = "final_classifier"
 			self.intent_layers.append(layer)
 
-			layer = FinalPool()
+			layer = FinalPool()					# xzl: collapse over T...
 			layer.name = "final_pool"
 			self.intent_layers.append(layer)
 
 			self.intent_layers = torch.nn.ModuleList(self.intent_layers)
 
-		# seq2seq
+		# seq2seq			xzl: not using RNN+classifier, but encoder/decoder (attention) to emit intent tuple
 		else:
-			self.SOS = config.Sy_intent.index("<sos>")
+			self.SOS = config.Sy_intent.index("<sos>")		# xzl: SOS/EOS start/end of seq
 			#self.EOS = config.EOS
 			self.num_labels = len(config.Sy_intent) 
 			self.encoder = Seq2SeqEncoder(out_dim, config.num_intent_encoder_layers, config.intent_encoder_dim)
 			self.decoder = Seq2SeqDecoder(self.num_labels, config.num_intent_decoder_layers, config.intent_encoder_dim, config.intent_decoder_dim, config.intent_decoder_key_dim, config.intent_decoder_value_dim, self.SOS)
+			print("xzl: num_intent_encoder_layers", config.num_intent_encoder_layers)
 
 		if self.is_cuda:
 			self.cuda()
@@ -754,7 +796,7 @@ class Model(torch.nn.Module):
 	def unfreeze_one_layer(self):
 		"""
 		ULMFiT-style unfreezing:
-			Unfreeze the next trainable layer
+			Unfreeze the next trainable layer`
 		"""
 		# no unfreezing
 		if self.unfreezing_type == 0:
@@ -803,17 +845,18 @@ class Model(torch.nn.Module):
 			y_intent = y_intent.cuda()
 		out = self.pretrained_model.compute_features(x)
 
-		if not self.seq2seq:
+		if not self.seq2seq:		
 			for layer in self.intent_layers:
 				out = layer(out)
-			intent_logits = out # shape: (batch size, num_values_total)
+			intent_logits = out # shape: (batch size, num_values_total)	xzl: one logit for each possible value. a flattened list of values... across all slots
 
 			intent_loss = 0.
 			start_idx = 0
 			predicted_intent = []
-			for slot in range(len(self.values_per_slot)):
-				end_idx = start_idx + self.values_per_slot[slot]
-				subset = intent_logits[:, start_idx:end_idx]
+			# xzl: split the list of logits by slot... b/c for each slot we'll predict one filler
+			for slot in range(len(self.values_per_slot)):		
+				end_idx = start_idx + self.values_per_slot[slot]		
+				subset = intent_logits[:, start_idx:end_idx]		
 				intent_loss += torch.nn.functional.cross_entropy(subset, y_intent[:, slot])
 				predicted_intent.append(subset.max(1)[1])
 				start_idx = end_idx
@@ -822,13 +865,13 @@ class Model(torch.nn.Module):
 
 			return intent_loss, intent_acc
 
-		else: # seq2seq
+		else: # seq2seq			# xzl: enc/dec arch...
 			out = self.encoder(out)
 			log_probs = self.decoder(out, y_intent)
-			return -log_probs.mean(), torch.tensor([0.])
+			return -log_probs.mean(), torch.tensor([0.])		# xzl: why return mean??
 
 	def predict_intents(self, x):
-		out = self.pretrained_model.compute_features(x)
+		out = self.pretrained_model.compute_features(x)		# xzl: no phoneme/word classifiers
 
 		if not self.seq2seq:
 			for layer in self.intent_layers:
@@ -850,6 +893,7 @@ class Model(torch.nn.Module):
 			beam_scores, beam = self.decoder.infer(out, self.Sy_intent, B=4)
 			return beam_scores, beam
 
+	# xzl: mostly covert numerical prediction to readable strings...
 	def decode_intents(self, x):
 		_, predicted_intent = self.predict_intents(x)
 
@@ -858,7 +902,7 @@ class Model(torch.nn.Module):
 			for prediction in predicted_intent:
 				intent = []
 				for idx, slot in enumerate(self.Sy_intent):
-					for value in self.Sy_intent[slot]:
+					for value in self.Sy_intent[slot]:		# xzl: reverse lookup.. from index to string
 						if prediction[idx].item() == self.Sy_intent[slot][value]:
 							intent.append(value)
 				intents.append(intent)
